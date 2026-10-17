@@ -1,0 +1,21 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: Archi SharePoint Sync
+Bundle-SymbolicName: com.archimatetool.sharepoint;singleton:=true
+Bundle-Version: 1.0.1
+Bundle-Activator: com.archimatetool.sharepoint.SharePointPlugin
+Bundle-Vendor: archi-sharepoint
+Require-Bundle: org.eclipse.core.runtime,
+ org.eclipse.ui,
+ org.eclipse.jface,
+ com.archimatetool.editor;bundle-version="5.0.0",
+ com.archimatetool.model;bundle-version="5.0.0"
+Bundle-RequiredExecutionEnvironment: JavaSE-21
+Bundle-ClassPath: .,
+ lib/azure-json-1.4.0.jar,
+ lib/error_prone_annotations-2.27.0.jar,
+ lib/gson-2.11.0.jar,
+ lib/msal4j-1.23.1.jar,
+ lib/slf4j-api-2.0.16.jar,
+ lib/slf4j-nop-2.0.16.jar
+Automatic-Module-Name: com.archimatetool.sharepoint

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+
+    <!-- Early startup: register sync UI callbacks and restore bindings -->
+    <extension point="org.eclipse.ui.startup">
+        <startup class="com.archimatetool.sharepoint.ui.SharePointStartup"/>
+    </extension>
+
+    <!-- Commands -->
+    <extension point="org.eclipse.ui.commands">
+        <category id="com.archimatetool.sharepoint.category"
+                  name="SharePoint"
+                  description="SharePoint synchronization commands"/>
+        <command id="com.archimatetool.sharepoint.commands.signIn"
+                 name="Sign in to Microsoft 365"
+                 categoryId="com.archimatetool.sharepoint.category"/>
+        <command id="com.archimatetool.sharepoint.commands.signOut"
+                 name="Sign out"
+                 categoryId="com.archimatetool.sharepoint.category"/>
+        <command id="com.archimatetool.sharepoint.commands.connect"
+                 name="Connect to SharePoint..."
+                 categoryId="com.archimatetool.sharepoint.category"/>
+        <command id="com.archimatetool.sharepoint.commands.disconnect"
+                 name="Disconnect from SharePoint"
+                 categoryId="com.archimatetool.sharepoint.category"/>
+        <command id="com.archimatetool.sharepoint.commands.syncNow"
+                 name="Sync now"
+                 categoryId="com.archimatetool.sharepoint.category"/>
+        <command id="com.archimatetool.sharepoint.commands.checkOut"
+                 name="Check out"
+                 categoryId="com.archimatetool.sharepoint.category"/>
+        <command id="com.archimatetool.sharepoint.commands.checkIn"
+                 name="Check in..."
+                 categoryId="com.archimatetool.sharepoint.category"/>
+    </extension>
+
+    <!-- Handlers -->
+    <extension point="org.eclipse.ui.handlers">
+        <handler commandId="com.archimatetool.sharepoint.commands.signIn"
+                 class="com.archimatetool.sharepoint.ui.handlers.SignInHandler"/>
+        <handler commandId="com.archimatetool.sharepoint.commands.signOut"
+                 class="com.archimatetool.sharepoint.ui.handlers.SignOutHandler"/>
+        <handler commandId="com.archimatetool.sharepoint.commands.connect"
+                 class="com.archimatetool.sharepoint.ui.handlers.ConnectHandler"/>
+        <handler commandId="com.archimatetool.sharepoint.commands.disconnect"
+                 class="com.archimatetool.sharepoint.ui.handlers.DisconnectHandler"/>
+        <handler commandId="com.archimatetool.sharepoint.commands.syncNow"
+                 class="com.archimatetool.sharepoint.ui.handlers.SyncNowHandler"/>
+        <handler commandId="com.archimatetool.sharepoint.commands.checkOut"
+                 class="com.archimatetool.sharepoint.ui.handlers.CheckOutHandler"/>
+        <handler commandId="com.archimatetool.sharepoint.commands.checkIn"
+                 class="com.archimatetool.sharepoint.ui.handlers.CheckInHandler"/>
+    </extension>
+
+    <!-- Main menu contribution -->
+    <extension point="org.eclipse.ui.menus">
+        <menuContribution locationURI="menu:org.eclipse.ui.main.menu?after=tools">
+            <menu id="com.archimatetool.sharepoint.menu" label="SharePoint">
+                <command commandId="com.archimatetool.sharepoint.commands.signIn"/>
+                <command commandId="com.archimatetool.sharepoint.commands.signOut"/>
+                <separator name="com.archimatetool.sharepoint.separator.auth" visible="true"/>
+                <command commandId="com.archimatetool.sharepoint.commands.connect"/>
+                <command commandId="com.archimatetool.sharepoint.commands.disconnect"/>
+                <separator name="com.archimatetool.sharepoint.separator.sync" visible="true"/>
+                <command commandId="com.archimatetool.sharepoint.commands.syncNow"/>
+                <command commandId="com.archimatetool.sharepoint.commands.checkOut"/>
+                <command commandId="com.archimatetool.sharepoint.commands.checkIn"/>
+            </menu>
+        </menuContribution>
+    </extension>
+
+    <!-- Preference page -->
+    <extension point="org.eclipse.ui.preferencePages">
+        <page id="com.archimatetool.sharepoint.prefs.page"
+              name="SharePoint"
+              class="com.archimatetool.sharepoint.prefs.SharePointPreferencePage"/>
+    </extension>
+
+    <!-- Preference defaults -->
+    <extension point="org.eclipse.core.runtime.preferences">
+        <initializer class="com.archimatetool.sharepoint.prefs.SharePointPreferenceInitializer"/>
+    </extension>
+
+</plugin>
