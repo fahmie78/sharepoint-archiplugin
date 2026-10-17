@@ -31,7 +31,9 @@ import com.archimatetool.sharepoint.graph.GraphClient;
 import com.archimatetool.sharepoint.graph.GraphException;
 import com.archimatetool.sharepoint.graph.NotFoundException;
 import com.archimatetool.sharepoint.graph.Site;
+import com.archimatetool.sharepoint.prefs.Prefs;
 import com.archimatetool.sharepoint.sync.ModelBinding;
+import com.archimatetool.sharepoint.sync.SyncEngine;
 
 /**
  * Three-page wizard that connects an open ArchiMate model to a file in a
@@ -74,6 +76,21 @@ public class ConnectWizard extends Wizard {
      */
     public ModelBinding getBinding() {
         return binding;
+    }
+
+    /**
+     * Site URL to prefill the wizard with: derived from the model's existing
+     * connection when there is one, otherwise the last URL used (persisted across
+     * restarts).
+     */
+    private String initialSiteUrl() {
+        ModelBinding existing = SyncEngine.get().bindingFor(model);
+        if(existing != null && existing.displayUrl != null && existing.itemPath != null
+                && existing.displayUrl.endsWith("/" + existing.itemPath)) {
+            return existing.displayUrl.substring(0,
+                    existing.displayUrl.length() - existing.itemPath.length() - 1);
+        }
+        return Prefs.getLastSiteUrl();
     }
 
     @Override
@@ -153,6 +170,11 @@ public class ConnectWizard extends Wizard {
                     b.localFilePath = localFile == null ? null : localFile.getAbsolutePath();
                     b.model = model;
                     binding = b;
+                    // remember the target so the wizard can prefill it next time
+                    Prefs.setLastConnection(
+                            sitePage.validatedUrl != null ? sitePage.validatedUrl
+                                    : sitePage.urlText.getText().trim(),
+                            folderPath);
                 }
                 catch(GraphException ge) {
                     throw new InvocationTargetException(ge);
@@ -225,6 +247,11 @@ public class ConnectWizard extends Wizard {
 
             urlText = new Text(container, SWT.BORDER);
             urlText.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+            // prefill: the model's existing connection, else the last used site URL
+            String prefill = initialSiteUrl();
+            if(!prefill.isEmpty()) {
+                urlText.setText(prefill);
+            }
             urlText.addModifyListener(e -> {
                 // any edit invalidates a previous validation
                 validatedSite = null;
@@ -390,7 +417,8 @@ public class ConnectWizard extends Wizard {
             Label folderLabel = new Label(container, SWT.NONE);
             folderLabel.setText("Folder path:");
             folderText = new Text(container, SWT.BORDER);
-            folderText.setText("/");
+            String lastFolder = Prefs.getLastFolderPath();
+            folderText.setText(lastFolder.isEmpty() ? "/" : "/" + lastFolder + "/");
             folderText.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
 
             Label fileLabel = new Label(container, SWT.NONE);

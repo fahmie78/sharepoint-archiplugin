@@ -64,4 +64,40 @@ public final class Prefs {
     public static boolean isCheckOutOnEdit() {
         return node().getBoolean(PreferenceConstants.P_CHECKOUT_ON_EDIT, false);
     }
+
+    /**
+     * @return the last site URL used in the connect wizard, or an empty string.
+     */
+    public static String getLastSiteUrl() {
+        return node().get(PreferenceConstants.P_LAST_SITE_URL, "");
+    }
+
+    /**
+     * @return the last folder path used in the connect wizard, or an empty string (root).
+     */
+    public static String getLastFolderPath() {
+        return node().get(PreferenceConstants.P_LAST_FOLDER_PATH, "");
+    }
+
+    /**
+     * Remembers the last successful connect target so the wizard can prefill it
+     * after a restart. Flushed immediately (Archi has no workspace save cycle).
+     *
+     * @param siteUrl    the SharePoint site URL as entered by the user
+     * @param folderPath the folder path within the drive (empty = root)
+     */
+    public static void setLastConnection(String siteUrl, String folderPath) {
+        org.osgi.service.prefs.Preferences node = node();
+        if (siteUrl != null) {
+            node.put(PreferenceConstants.P_LAST_SITE_URL, siteUrl);
+        }
+        if (folderPath != null) {
+            node.put(PreferenceConstants.P_LAST_FOLDER_PATH, folderPath);
+        }
+        try {
+            ((org.eclipse.core.runtime.preferences.IEclipsePreferences) node).flush();
+        } catch (org.osgi.service.prefs.BackingStoreException ignored) {
+            // best-effort persistence
+        }
+    }
 }

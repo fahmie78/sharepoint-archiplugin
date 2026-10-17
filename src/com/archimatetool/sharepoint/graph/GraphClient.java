@@ -146,6 +146,11 @@ public class GraphClient {
 
     /**
      * Gets metadata for an item addressed by path relative to the drive root.
+     * <p>
+     * Note: the {@code publication} facet is NOT requested. Graph v1.0 rejects
+     * {@code $expand=publication} (facets are not navigation properties) and does
+     * not reliably return it via {@code $select} either. When the facet happens to
+     * be present in a response it is still parsed (see {@link DriveItem#publicationKnown}).
      *
      * @param driveId  the Graph drive id
      * @param itemPath the item path (e.g. {@code folder/model.archimate})
@@ -233,6 +238,34 @@ public class GraphClient {
                         .ofString(gson.toJson(body), StandardCharsets.UTF_8))
                 .header("Content-Type", "application/json");
         execute(request, DEFAULT_TIMEOUT);
+    }
+
+    /**
+     * Discards the check-out of an item (SharePoint discard check-out), abandoning any
+     * changes made to the server file while it was checked out.
+     *
+     * @param driveId the Graph drive id
+     * @param itemId  the Graph item id
+     * @throws GraphException on network or server errors; HTTP 400 is reported as
+     *         {@code GraphException(400, "the file is not checked out")} and HTTP 423
+     *         (Locked) as {@code GraphException(423, "the file is checked out by another user")}
+     */
+    public void discardCheckOut(String driveId, String itemId) throws GraphException {
+        String url = baseUrl + "/drives/" + encode(driveId) + "/items/" + encode(itemId)
+                + "/discardCheckout";
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url))
+                .POST(HttpRequest.BodyPublishers.noBody());
+        try {
+            execute(request, DEFAULT_TIMEOUT);
+        } catch (GraphException e) {
+            if (e.statusCode == 400) {
+                throw new GraphException(400, "the file is not checked out", e);
+            }
+            if (e.statusCode == 423) {
+                throw new GraphException(423, "the file is checked out by another user", e);
+            }
+            throw e;
+        }
     }
 
     // ------------------------------------------------------------------ internals
@@ -343,6 +376,18 @@ public class GraphClient {
         item.lastModifiedBy = user != null ? string(user, "displayName") : null;
         JsonElement folder = o.get("folder");
         item.folder = folder != null && folder.isJsonObject();
+        JsonObject publication = object(o, "publication");
+        item.publicationKnown = publication != null;
+        if (publication != null) {
+            item.checkedOut = "checkout".equalsIgnoreCase(string(publication, "level"));
+            JsonObject checkedOutBy = object(publication, "checkedOutBy");
+            JsonObject checkedOutByUser = checkedOutBy != null ? object(checkedOutBy, "user") : null;
+            if (checkedOutByUser != null) {
+                String email = string(checkedOutByUser, "email");
+                String displayName = string(checkedOutByUser, "displayName");
+                item.checkedOutBy = email != null && !email.isBlank() ? email : displayName;
+            }
+        }
         return item;
     }
 

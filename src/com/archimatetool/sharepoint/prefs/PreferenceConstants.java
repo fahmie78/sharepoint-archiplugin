@@ -28,6 +28,12 @@ public final class PreferenceConstants {
     /** Check the file out on edit / check in on close; default false. */
     public static final String P_CHECKOUT_ON_EDIT = "checkOutOnEdit";
 
+    /** Last SharePoint site URL used in the connect wizard (prefill). */
+    public static final String P_LAST_SITE_URL = "lastSiteUrl";
+
+    /** Last folder path used in the connect wizard (prefill). */
+    public static final String P_LAST_FOLDER_PATH = "lastFolderPath";
+
     /** Default value for {@link #P_TENANT}. */
     public static final String DEFAULT_TENANT = "organizations";
 

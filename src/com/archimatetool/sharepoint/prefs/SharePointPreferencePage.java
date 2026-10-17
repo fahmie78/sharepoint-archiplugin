@@ -36,6 +36,33 @@ public class SharePointPreferencePage extends FieldEditorPreferencePage implemen
     }
 
     @Override
+    protected void performApply() {
+        super.performApply();
+        flushPreferences();
+    }
+
+    @Override
+    public boolean performOk() {
+        boolean ok = super.performOk();
+        flushPreferences();
+        return ok;
+    }
+
+    /**
+     * Explicitly flushes the instance-scope preferences to disk. Archi is a
+     * standalone RCP app without a workspace save cycle, so relying on the
+     * framework to persist dirty preference nodes at shutdown is not safe.
+     */
+    private static void flushPreferences() {
+        try {
+            InstanceScope.INSTANCE.getNode(PreferenceConstants.PLUGIN_ID).flush();
+        }
+        catch(org.osgi.service.prefs.BackingStoreException e) {
+            // best-effort persistence; nothing sensible to do in a preference page
+        }
+    }
+
+    @Override
     protected void createFieldEditors() {
         addField(new StringFieldEditor(PreferenceConstants.P_CLIENT_ID,
                 "Entra ID application (client) ID:", getFieldEditorParent()));

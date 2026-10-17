@@ -2,12 +2,14 @@
 
 **Autosave ArchiMate models directly to SharePoint Online, with Word-style concurrent access.**
 
-Plugin ID: `com.archimatetool.sharepoint` · Version 1.0.1 · Requires Archi **5.10+** (Java 21 runtime, ships with Archi).
+Plugin ID: `com.archimatetool.sharepoint` · Version 1.2.0 · Requires Archi **5.10+** (Java 21 runtime, ships with Archi).
 
 ## Features
 
 - **M365 Office-style sign-in** — interactive OAuth2 with your system browser (localhost loopback),
-  automatic fallback to device-code flow. Token cache persists across restarts.
+  automatic fallback to device-code flow. Token cache persists across restarts, and a background
+  warm-up at startup restores your session silently (no dialogs) so autosave and sync resume
+  automatically for previously connected models.
 - **Autosave to SharePoint Online** — every N seconds (default 60), dirty models are saved locally
   and uploaded via Microsoft Graph with ETag optimistic concurrency.
 - **Concurrent access, Word-on-SharePoint style** —
@@ -15,7 +17,12 @@ Plugin ID: `com.archimatetool.sharepoint` · Version 1.0.1 · Requires Archi **5
   - remote changed & local clean → reloads the remote version (auto or after confirmation);
   - remote changed & local dirty → conflict dialog: *Keep mine / Load theirs / Save my copy & load theirs / Ask me later*;
   - optional **check-out on edit / check-in on close** (SharePoint locking) via preferences.
-- Bindings are remembered per model file and restored on restart.
+- **Discard check-out** — the **Check out** menu item toggles to **Discard Check-out** while the
+  file is checked out to you, letting you abandon the server-side changes and release the lock
+  (after a confirmation).
+- Bindings are remembered per model file and restored on restart — reopen the model file and
+  it reconnects and resumes syncing automatically (after the silent session restore).
+  The connect wizard also remembers the last used site URL and folder.
 
 ## One-time setup: Entra ID app registration
 
@@ -37,8 +44,8 @@ In Archi: **Window → Preferences → SharePoint** → paste the Client ID (and
 ## Installation
 
 1. In Archi: **Help → Manage Plug-ins… → Install New…** → choose
-   `com.archimatetool.sharepoint_1.0.1.archiplugin` → restart Archi.
-   (Manual alternative: unzip and drop `com.archimatetool.sharepoint_1.0.1.jar` into Archi's
+   `com.archimatetool.sharepoint_1.2.0.archiplugin` → restart Archi.
+   (Manual alternative: unzip and drop `com.archimatetool.sharepoint_1.2.0.jar` into Archi's
    `dropins` folder, e.g. `%APPDATA%\Archi\dropins`, `~/Library/Application Support/Archi/dropins`,
    or `~/.archi/dropins`.)
 2. **SharePoint → Sign in to Microsoft 365** — a browser tab opens (or a device code is shown);
@@ -56,7 +63,8 @@ In Archi: **Window → Preferences → SharePoint** → paste the Client ID (and
 | Connect to SharePoint…   | Bind the active model to a SharePoint file                    |
 | Disconnect               | Remove the binding (file stays in SharePoint)                 |
 | Sync now                 | Immediate save + upload                                       |
-| Check out / Check in     | Explicit SharePoint lock (also automatic if enabled in prefs) |
+| Check out / Discard Check-out | Toggles: checks the file out, or discards your check-out (abandoning server-side changes) after confirmation |
+| Check in                  | Check the file back in with a comment (also automatic on close if enabled in prefs) |
 
 **Conflict handling:** if someone else uploads while you have unsaved changes, you get the
 conflict dialog; "Save my copy & load theirs" writes
@@ -73,7 +81,7 @@ conflict dialog; "Save my copy & load theirs" writes
   MSAL token cache persisted in the Archi state location.
 - Embedded runtime deps (inside the bundle's `lib/`): msal4j, azure-json, gson, slf4j-api/nop.
 
-## Limitations (v1.0.1)
+## Limitations (v1.2.0)
 
 - Sync granularity is the **whole file** (SharePoint cannot merge ArchiMate XML server-side the way
   Word merges documents). Concurrent edits are reconciled via conflict resolution, not merged.
@@ -83,4 +91,4 @@ conflict dialog; "Save my copy & load theirs" writes
 ## Build from source
 
 See `build.sh` (needs JDK 21 + the Archi 5.10.0 plugin jars + MSAL4J deps; the script expects the
-toolchain layout from this repository). Output: `com.archimatetool.sharepoint_1.0.1.archiplugin`.
+toolchain layout from this repository). Output: `com.archimatetool.sharepoint_1.2.0.archiplugin`.

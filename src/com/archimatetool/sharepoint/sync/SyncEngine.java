@@ -97,7 +97,20 @@ public final class SyncEngine {
 
         BindingState(ModelBinding binding) {
             this.binding = binding;
+            // restore the persisted check-out flag so the menu toggle survives restarts
+            this.checkedOut = binding.checkedOut;
         }
+    }
+
+    /**
+     * Sets the check-out flag on both the runtime state and the persisted binding
+     * (Graph v1.0 cannot reliably report check-out state, so the persisted flag is
+     * the cross-restart source of truth).
+     */
+    private void setCheckedOut(BindingState state, boolean value) {
+        state.checkedOut = value;
+        state.binding.checkedOut = value;
+        BindingStore.upsert(state.binding);
     }
 
     /** A runnable executed on the UI thread that may fail. */
@@ -231,12 +244,13 @@ public final class SyncEngine {
             return;
         }
         state.binding.model = null;
-        BindingStore.upsert(state.binding);
         if (state.checkedOut) {
             state.checkedOut = false;
+            state.binding.checkedOut = false;
             ModelBinding binding = state.binding;
             schedule(() -> checkInQuietly(binding));
         }
+        BindingStore.upsert(state.binding);
         setStatus(state, SyncStatus.IDLE, "Disconnected");
     }
 
@@ -259,6 +273,90 @@ public final class SyncEngine {
         BindingState state = stateFor(model);
         if (state != null) {
             schedule(() -> doSync(state, false));
+        }
+    }
+
+    /**
+     * Reports whether the bound SharePoint file is checked out to the current signed-in
+     * user. The flag is kept in sync with the server by the poll task and by the
+     * check-out/check-in/discard operations.
+     *
+     * @param model an open model
+     * @return {@code true} when the bound file is checked out to the current user
+     */
+    public boolean isCheckedOut(IArchimateModel model) {
+        BindingState state = stateFor(model);
+        return state != null && state.checkedOut;
+    }
+
+    /**
+     * Checks the bound SharePoint file out to the current user. Runs asynchronously under
+     * the per-binding lock; the outcome is reported via status listeners.
+     *
+     * @param model the bound model
+     */
+    public void checkOutNow(IArchimateModel model) {
+        BindingState state = stateFor(model);
+        if (state != null) {
+            schedule(() -> doCheckOut(state));
+        }
+    }
+
+    /**
+     * Checks the bound SharePoint file back in. Runs asynchronously under the
+     * per-binding lock; the outcome is reported via status listeners.
+     *
+     * @param model the bound model
+     */
+    public void checkInNow(IArchimateModel model) {
+        checkInNow(model, "Checked in from Archi");
+    }
+
+    /**
+     * Checks the bound SharePoint file back in with the given comment. Runs
+     * asynchronously under the per-binding lock; the outcome is reported via
+     * status listeners.
+     *
+     * @param model   the bound model
+     * @param comment the check-in comment; blank falls back to a default
+     */
+    public void checkInNow(IArchimateModel model, String comment) {
+        BindingState state = stateFor(model);
+        if (state != null) {
+            String text = comment == null || comment.isBlank() ? "Checked in from Archi" : comment;
+            schedule(() -> doCheckIn(state, text));
+        }
+    }
+
+    /**
+     * Discards the check-out of the bound SharePoint file, abandoning any changes made
+     * to the server file while it was checked out. Runs asynchronously under the
+     * per-binding lock; the outcome is reported via status listeners.
+     *
+     * @param model the bound model
+     */
+    public void discardCheckOutNow(IArchimateModel model) {
+        BindingState state = stateFor(model);
+        if (state != null) {
+            schedule(() -> doDiscardCheckOut(state));
+        }
+    }
+
+    /**
+     * Re-evaluates all currently open models against the persisted bindings.
+     * Called at startup to catch models that were already open before the
+     * engine's model listener was registered (their OPENED events were missed).
+     */
+    public void rescanOpenModels() {
+        if (shutdown) {
+            return;
+        }
+        for (IArchimateModel model : IEditorModelManager.INSTANCE.getModels()) {
+            try {
+                onModelOpened(model);
+            } catch (Throwable t) {
+                log("Failed to restore binding for an open model", t);
+            }
         }
     }
 
@@ -316,11 +414,12 @@ public final class SyncEngine {
         if (state != null && !state.reloading) {
             // keep the binding persisted so a reopened model reconnects automatically
             state.binding.model = null;
-            BindingStore.upsert(state.binding);
             if (state.checkedOut) {
                 state.checkedOut = false;
+                state.binding.checkedOut = false;
                 schedule(() -> checkInQuietly(state.binding));
             }
+            BindingStore.upsert(state.binding);
         }
     }
 
@@ -464,6 +563,7 @@ public final class SyncEngine {
         }
         try {
             DriveItem remote = graph().getItem(binding.driveId, binding.itemPath);
+            updateCheckedOutFromRemote(state, remote);
             if (remote.id != null) {
                 binding.itemId = remote.id;
             }
@@ -693,7 +793,7 @@ public final class SyncEngine {
         }
         try {
             graph().checkOut(binding.driveId, binding.itemId);
-            state.checkedOut = true;
+            setCheckedOut(state, true);
         } catch (GraphException e) {
             // 409 = already checked out (possibly by someone else); swallow/log either way
             log("Check-out failed (" + e.statusCode + "): " + e.getMessage(), null);
@@ -709,6 +809,117 @@ public final class SyncEngine {
         } catch (GraphException e) {
             // 409 = not checked out; swallow/log either way
             log("Check-in failed (" + e.statusCode + "): " + e.getMessage(), null);
+        }
+    }
+
+    /**
+     * Reconciles the local check-out flag with the remote publication facet. The flag is
+     * only set when the remote check-out belongs to the current signed-in user; a remote
+     * check-out by somebody else never flips {@code state.checkedOut} to {@code true}.
+     * <p>
+     * Graph v1.0 usually omits the publication facet entirely
+     * ({@link DriveItem#publicationKnown} {@code == false}); in that case the locally
+     * tracked (and persisted) state is kept untouched.
+     */
+    private void updateCheckedOutFromRemote(BindingState state, DriveItem remote) {
+        if (remote == null || !remote.publicationKnown) {
+            return;
+        }
+        boolean was = state.checkedOut;
+        if (!remote.checkedOut) {
+            setCheckedOut(state, false);
+        } else {
+            String checkedOutBy = remote.checkedOutBy;
+            if (checkedOutBy != null && !checkedOutBy.isBlank()) {
+                String user = AuthService.get().getSignedInUser();
+                setCheckedOut(state, user != null && checkedOutBy.equalsIgnoreCase(user));
+            } else {
+                // unknown holder: only keep counting it as ours if we already hold it
+                // locally (e.g. we just checked it out ourselves)
+            }
+        }
+        if (state.checkedOut != was) {
+            fireStatus(state);
+        }
+    }
+
+    private void doCheckOut(BindingState state) {
+        ModelBinding binding = state.binding;
+        if (shutdown || binding.model == null) {
+            return;
+        }
+        if (!state.syncLock.compareAndSet(false, true)) {
+            return; // a sync is in progress; the next poll keeps the state fresh
+        }
+        try {
+            if (binding.driveId == null || binding.itemId == null) {
+                setStatus(state, SyncStatus.ERROR,
+                        "Not connected to an existing SharePoint file");
+                return;
+            }
+            graph().checkOut(binding.driveId, binding.itemId);
+            setCheckedOut(state, true);
+            setStatus(state, SyncStatus.IDLE, "Checked out " + binding.itemPath);
+        } catch (Throwable t) {
+            if (t instanceof GraphException ge && ge.statusCode == 400 && ge.getMessage() != null
+                    && ge.getMessage().toLowerCase().contains("already checked out")) {
+                // already checked out to us (e.g. from an earlier session): adopt the state
+                setCheckedOut(state, true);
+                setStatus(state, SyncStatus.IDLE,
+                        "Already checked out to you: " + binding.itemPath);
+            } else {
+                handleError(state, t);
+            }
+        } finally {
+            state.syncLock.set(false);
+        }
+    }
+
+    private void doCheckIn(BindingState state, String comment) {
+        ModelBinding binding = state.binding;
+        if (shutdown || binding.model == null) {
+            return;
+        }
+        if (!state.syncLock.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            if (binding.driveId == null || binding.itemId == null) {
+                setStatus(state, SyncStatus.ERROR,
+                        "Not connected to an existing SharePoint file");
+                return;
+            }
+            graph().checkIn(binding.driveId, binding.itemId, comment);
+            setCheckedOut(state, false);
+            setStatus(state, SyncStatus.IDLE, "Checked in " + binding.itemPath);
+        } catch (Throwable t) {
+            handleError(state, t);
+        } finally {
+            state.syncLock.set(false);
+        }
+    }
+
+    private void doDiscardCheckOut(BindingState state) {
+        ModelBinding binding = state.binding;
+        if (shutdown || binding.model == null) {
+            return;
+        }
+        if (!state.syncLock.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            if (binding.driveId == null || binding.itemId == null) {
+                setStatus(state, SyncStatus.ERROR,
+                        "Not connected to an existing SharePoint file");
+                return;
+            }
+            graph().discardCheckOut(binding.driveId, binding.itemId);
+            setCheckedOut(state, false);
+            setStatus(state, SyncStatus.IDLE, "Discarded check-out of " + binding.itemPath);
+        } catch (Throwable t) {
+            handleError(state, t);
+        } finally {
+            state.syncLock.set(false);
         }
     }
 
@@ -834,9 +1045,15 @@ public final class SyncEngine {
         }
         state.lastStatus = status;
         state.lastMessage = message;
+        fireStatus(state);
+    }
+
+    /** Notifies listeners of the current status, even if it did not change. */
+    private void fireStatus(BindingState state) {
+        SyncStatus status = state.lastStatus != null ? state.lastStatus : SyncStatus.IDLE;
         for (SyncListener listener : listeners) {
             try {
-                listener.statusChanged(state.binding, status, message);
+                listener.statusChanged(state.binding, status, state.lastMessage);
             } catch (Throwable t) {
                 log("SyncListener failed", t);
             }

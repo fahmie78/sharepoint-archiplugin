@@ -32,6 +32,14 @@ public final class ModelBinding {
     /** Absolute path of the local model file. */
     public String localFilePath;
 
+    /**
+     * Persisted check-out flag: {@code true} when this session (machine + user)
+     * last held the remote check-out. Graph v1.0 cannot reliably report the
+     * check-out state, so this is the cross-restart source of truth for the
+     * "Check out" / "Discard Check-out" menu toggle.
+     */
+    public boolean checkedOut;
+
     /** The bound model, set while it is open in the editor; never persisted. */
     public transient IArchimateModel model;
 

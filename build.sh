@@ -17,10 +17,10 @@ echo "== jar =="
 mkdir -p /tmp/sp-dist/lib && cp "$TOOL"/deps/lib/*.jar /tmp/sp-dist/lib/
 cp -r META-INF /tmp/sp-dist/ && cp plugin.xml /tmp/sp-dist/
 cp -r /tmp/sp-bin/com /tmp/sp-dist/
-(cd /tmp/sp-dist && "$JAR" cfm "$HERE/com.archimatetool.sharepoint_1.0.1.jar" META-INF/MANIFEST.MF .)
+(cd /tmp/sp-dist && "$JAR" cfm "$HERE/com.archimatetool.sharepoint_1.2.0.jar" META-INF/MANIFEST.MF .)
 echo "== .archiplugin =="
 rm -rf /tmp/sp-pkg && mkdir -p /tmp/sp-pkg
 echo 'Magic file to signify this is an Archi plug-in bundle.' > /tmp/sp-pkg/archi-plugin
-cp "$HERE/com.archimatetool.sharepoint_1.0.1.jar" /tmp/sp-pkg/
-(cd /tmp/sp-pkg && zip -q "$HERE/com.archimatetool.sharepoint_1.0.1.archiplugin" archi-plugin com.archimatetool.sharepoint_1.0.1.jar)
-echo "BUILT:"; ls -la com.archimatetool.sharepoint_1.0.1.jar com.archimatetool.sharepoint_1.0.1.archiplugin
+cp "$HERE/com.archimatetool.sharepoint_1.2.0.jar" /tmp/sp-pkg/
+(cd /tmp/sp-pkg && zip -q "$HERE/com.archimatetool.sharepoint_1.2.0.archiplugin" archi-plugin com.archimatetool.sharepoint_1.2.0.jar)
+echo "BUILT:"; ls -la com.archimatetool.sharepoint_1.2.0.jar com.archimatetool.sharepoint_1.2.0.archiplugin
