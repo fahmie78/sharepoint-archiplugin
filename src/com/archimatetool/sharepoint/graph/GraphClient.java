@@ -9,6 +9,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -205,6 +207,170 @@ public class GraphClient {
         String url = baseUrl + "/drives/" + encode(driveId) + "/items/" + encode(itemId) + "/content";
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url)).GET();
         return execute(request, TRANSFER_TIMEOUT).body();
+    }
+
+    /**
+     * Lists the versions of an item, newest first.
+     * <p>
+     * driveItemVersion has no comment field on Graph v1.0, so check-in comments are
+     * enriched best-effort from the versions of the document library's backing list
+     * item (matched by version label or by lastModifiedDateTime within ±2 s). Any
+     * failure of the enrichment (403/404/parse) degrades gracefully to {@code null}
+     * comments and never fails the listing.
+     * </p>
+     *
+     * @param driveId the Graph drive id
+     * @param itemId  the Graph item id
+     * @return the versions, newest first (never {@code null})
+     * @throws GraphException on network or server errors
+     */
+    public List<DriveItemVersion> listVersions(String driveId, String itemId)
+            throws GraphException {
+        String url = baseUrl + "/drives/" + encode(driveId) + "/items/" + encode(itemId)
+                + "/versions";
+        List<DriveItemVersion> versions = new ArrayList<>();
+        while (url != null) {
+            JsonObject page = getJson(url);
+            for (JsonElement element : array(page, "value")) {
+                JsonObject o = element.getAsJsonObject();
+                DriveItemVersion version = new DriveItemVersion();
+                version.id = string(o, "id");
+                JsonElement size = o.get("size");
+                version.size = size != null && size.isJsonPrimitive() ? size.getAsLong() : 0;
+                version.lastModified = string(o, "lastModifiedDateTime");
+                JsonObject lastModifiedBy = object(o, "lastModifiedBy");
+                JsonObject user = lastModifiedBy != null ? object(lastModifiedBy, "user") : null;
+                version.lastModifiedBy = user != null ? string(user, "displayName") : null;
+                versions.add(version);
+            }
+            url = nextLink(page);
+        }
+        // newest first: by timestamp, falling back to the numeric version label
+        versions.sort((a, b) -> {
+            Instant ta = parseInstant(a.lastModified);
+            Instant tb = parseInstant(b.lastModified);
+            if (ta != null && tb != null) {
+                return tb.compareTo(ta);
+            }
+            if (ta != null) {
+                return -1;
+            }
+            if (tb != null) {
+                return 1;
+            }
+            return Double.compare(versionLabel(b.id), versionLabel(a.id));
+        });
+        enrichComments(driveId, itemId, versions);
+        return versions;
+    }
+
+    /**
+     * Downloads the content of a specific version of an item.
+     *
+     * @param driveId   the Graph drive id
+     * @param itemId    the Graph item id
+     * @param versionId the version id (e.g. {@code "3.0"})
+     * @return the file bytes of that version
+     * @throws GraphException on network or server errors
+     */
+    public byte[] downloadVersion(String driveId, String itemId, String versionId)
+            throws GraphException {
+        String url = baseUrl + "/drives/" + encode(driveId) + "/items/" + encode(itemId)
+                + "/versions/" + encode(versionId) + "/content";
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url)).GET();
+        return execute(request, TRANSFER_TIMEOUT).body();
+    }
+
+    /**
+     * Best-effort enrichment of check-in comments. The driveItem's
+     * {@code $expand=listItem($select=id,sharepointIds)} supplies both the backing
+     * list item id and the site id; the list item versions carry the
+     * {@code CheckInComment} field. Never throws.
+     */
+    private void enrichComments(String driveId, String itemId, List<DriveItemVersion> versions) {
+        try {
+            JsonObject item = getJson(baseUrl + "/drives/" + encode(driveId) + "/items/"
+                    + encode(itemId) + "?$expand=listItem($select=id,sharepointIds)");
+            JsonObject listItem = object(item, "listItem");
+            if (listItem == null) {
+                return;
+            }
+            String listItemId = string(listItem, "id");
+            JsonObject sharepointIds = object(listItem, "sharepointIds");
+            String siteId = sharepointIds != null ? string(sharepointIds, "siteId") : null;
+            if (listItemId == null || siteId == null) {
+                return; // no backing list visible - skip comments
+            }
+            String url = baseUrl + "/sites/" + encode(siteId) + "/lists/" + encode(driveId)
+                    + "/items/" + encode(listItemId)
+                    + "/versions?expand=fields($select=CheckInComment)";
+            List<JsonObject> listVersions = new ArrayList<>();
+            while (url != null) {
+                JsonObject page = getJson(url);
+                for (JsonElement element : array(page, "value")) {
+                    listVersions.add(element.getAsJsonObject());
+                }
+                url = nextLink(page);
+            }
+            for (DriveItemVersion version : versions) {
+                version.comment = findComment(version, listVersions);
+            }
+        } catch (Throwable t) {
+            // best-effort only: 403/404/parse errors degrade to empty comments
+        }
+    }
+
+    /** Finds the check-in comment of a list version matching the given drive version. */
+    private static String findComment(DriveItemVersion version, List<JsonObject> listVersions) {
+        // match by version label first
+        for (JsonObject o : listVersions) {
+            if (version.id != null && version.id.equals(string(o, "id"))) {
+                String comment = checkInComment(o);
+                if (comment != null) {
+                    return comment;
+                }
+            }
+        }
+        // then by lastModifiedDateTime within ±2 seconds
+        Instant modified = parseInstant(version.lastModified);
+        if (modified != null) {
+            for (JsonObject o : listVersions) {
+                Instant other = parseInstant(string(o, "lastModifiedDateTime"));
+                if (other != null
+                        && Math.abs(Duration.between(modified, other).toMillis()) <= 2000) {
+                    return checkInComment(o);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String checkInComment(JsonObject listVersion) {
+        JsonObject fields = object(listVersion, "fields");
+        return fields != null ? string(fields, "CheckInComment") : null;
+    }
+
+    private static Instant parseInstant(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (RuntimeException e) {
+            try {
+                return OffsetDateTime.parse(value).toInstant();
+            } catch (RuntimeException ignored) {
+                return null;
+            }
+        }
+    }
+
+    private static double versionLabel(String id) {
+        try {
+            return id != null ? Double.parseDouble(id) : 0;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     /**

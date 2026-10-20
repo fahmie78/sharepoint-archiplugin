@@ -18,6 +18,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IStatus;
@@ -30,6 +31,7 @@ import com.archimatetool.editor.model.IEditorModelManager;
 import com.archimatetool.model.IArchimateModel;
 import com.archimatetool.sharepoint.auth.AuthService;
 import com.archimatetool.sharepoint.graph.DriveItem;
+import com.archimatetool.sharepoint.graph.DriveItemVersion;
 import com.archimatetool.sharepoint.graph.GraphAuthException;
 import com.archimatetool.sharepoint.graph.GraphClient;
 import com.archimatetool.sharepoint.graph.GraphException;
@@ -340,6 +342,67 @@ public final class SyncEngine {
         if (state != null) {
             schedule(() -> doDiscardCheckOut(state));
         }
+    }
+
+    /**
+     * Lists the SharePoint versions of the bound file, newest first (including
+     * best-effort check-in comments). Runs asynchronously on the scheduler thread
+     * under the per-binding sync lock; both callbacks are marshalled to the UI
+     * thread.
+     *
+     * @param model the bound model
+     * @param ok    invoked on the UI thread with the versions (never {@code null})
+     * @param err   invoked on the UI thread with the failure
+     */
+    public void listVersions(IArchimateModel model, Consumer<List<DriveItemVersion>> ok,
+            Consumer<Throwable> err) {
+        BindingState state = stateFor(model);
+        if (state == null) {
+            notifyVersionError(err,
+                    new GraphException(-1, "Model is not connected to SharePoint"));
+            return;
+        }
+        schedule(() -> doListVersions(state, ok, err));
+    }
+
+    /**
+     * Restores the given SharePoint version into the locally open model: downloads
+     * the version bytes, then reloads the model exactly like
+     * {@code reloadFromRemote} (close discarding changes → overwrite local file →
+     * reopen → rebind). Runs asynchronously under the per-binding sync lock.
+     * <p>
+     * Unlike a remote reload this does NOT change {@code binding.lastETag} — the
+     * remote current version is untouched, so polling must not see a phantom remote
+     * change. Restore NEVER uploads by itself: publishing the restored version as
+     * the new SharePoint current version is an explicit follow-up user action
+     * ({@link #syncNow(IArchimateModel)}).
+     * </p>
+     *
+     * @param model   the bound model
+     * @param version the version to restore
+     */
+    public void restoreVersion(IArchimateModel model, DriveItemVersion version) {
+        restoreVersion(model, version, null);
+    }
+
+    /**
+     * Like {@link #restoreVersion(IArchimateModel, DriveItemVersion)} but invokes
+     * {@code onDone} on the UI thread when finished: with the reopened model on
+     * success (the reload closes the original model instance and opens a new one),
+     * or with {@code null} on failure.
+     *
+     * @param model   the bound model
+     * @param version the version to restore
+     * @param onDone  completion callback on the UI thread (may be {@code null})
+     */
+    public void restoreVersion(IArchimateModel model, DriveItemVersion version,
+            Consumer<IArchimateModel> onDone) {
+        BindingState state = stateFor(model);
+        if (state == null || version == null || version.id == null) {
+            notifyRestored(onDone, null);
+            return;
+        }
+        schedule(() -> doRestoreVersion(state, version, onDone));
     }
 
     /**
@@ -670,13 +733,44 @@ public final class SyncEngine {
             setStatus(state, SyncStatus.ERROR, "Cannot reload: model or remote item missing");
             return;
         }
+        setStatus(state, SyncStatus.SYNCING, "Downloading remote copy…");
+        byte[] bytes = graph().download(binding.driveId, itemId);
+        if (!reloadWithBytes(state, bytes)) {
+            return;
+        }
+        if (remote.eTag != null) {
+            binding.lastETag = remote.eTag;
+        }
+        state.dirty = false;
+        state.declinedETag = null;
+        BindingStore.upsert(binding);
+        setStatus(state, SyncStatus.UP_TO_DATE, "Reloaded remote version");
+    }
+
+    /**
+     * Reloads the bound model from the given bytes: close the model (discarding
+     * local changes), overwrite the local file, reopen it and rebind the state to
+     * the reopened model. Shared by {@link #reloadFromRemote(BindingState, DriveItem)}
+     * and the version-restore flow. Does NOT touch {@code binding.lastETag}; the
+     * caller decides how (and whether) to update it afterwards.
+     *
+     * @param state the binding state
+     * @param bytes the file content to reload from
+     * @return {@code true} when the model was reopened and rebound
+     * @throws IOException when writing the local file failed
+     */
+    private boolean reloadWithBytes(BindingState state, byte[] bytes) throws IOException {
+        ModelBinding binding = state.binding;
+        IArchimateModel model = binding.model;
+        if (model == null) {
+            setStatus(state, SyncStatus.ERROR, "Cannot reload: model missing");
+            return false;
+        }
         File localFile = binding.localFile() != null ? binding.localFile() : model.getFile();
         if (localFile == null) {
             setStatus(state, SyncStatus.ERROR, "Save the model to a local file before syncing");
-            return;
+            return false;
         }
-        setStatus(state, SyncStatus.SYNCING, "Downloading remote copy…");
-        byte[] bytes = graph().download(binding.driveId, itemId);
         state.reloading = true;
         boolean[] closed = { false };
         try {
@@ -720,16 +814,10 @@ public final class SyncEngine {
         }
         if (binding.model == null) {
             setStatus(state, SyncStatus.ERROR, "Reload failed: model could not be reopened");
-            return;
-        }
-        if (remote.eTag != null) {
-            binding.lastETag = remote.eTag;
+            return false;
         }
         binding.localFilePath = localFile.getAbsolutePath();
-        state.dirty = false;
-        state.declinedETag = null;
-        BindingStore.upsert(binding);
-        setStatus(state, SyncStatus.UP_TO_DATE, "Reloaded remote version");
+        return true;
     }
 
     /** Copies the local file to {@code <name>.conflict-YYYYMMDD-HHmmss.archimate}. */
@@ -923,6 +1011,81 @@ public final class SyncEngine {
         }
     }
 
+    /** Lists the versions of the bound file under the per-binding sync lock. */
+    private void doListVersions(BindingState state, Consumer<List<DriveItemVersion>> ok,
+            Consumer<Throwable> err) {
+        ModelBinding binding = state.binding;
+        if (shutdown) {
+            return;
+        }
+        if (binding.driveId == null || binding.itemId == null) {
+            notifyVersionError(err,
+                    new GraphException(-1, "Not connected to an existing SharePoint file"));
+            return;
+        }
+        if (!state.syncLock.compareAndSet(false, true)) {
+            notifyVersionError(err, new GraphException(-1,
+                    "A sync operation is in progress; try again in a moment"));
+            return;
+        }
+        try {
+            List<DriveItemVersion> versions =
+                    graph().listVersions(binding.driveId, binding.itemId);
+            notifyVersions(ok, versions);
+        } catch (Throwable t) {
+            notifyVersionError(err, t);
+        } finally {
+            state.syncLock.set(false);
+        }
+    }
+
+    /**
+     * Downloads the given version and reloads the model from those bytes via
+     * {@link #reloadWithBytes(BindingState, byte[])}. Unlike
+     * {@link #reloadFromRemote(BindingState, DriveItem)} this leaves
+     * {@code binding.lastETag} untouched — the remote current version did not
+     * change, so polling must not see a phantom remote change — and it never
+     * uploads.
+     */
+    private void doRestoreVersion(BindingState state, DriveItemVersion version,
+            Consumer<IArchimateModel> onDone) {
+        ModelBinding binding = state.binding;
+        IArchimateModel model = binding.model;
+        if (shutdown || model == null) {
+            notifyRestored(onDone, null);
+            return;
+        }
+        if (!state.syncLock.compareAndSet(false, true)) {
+            notifyRestored(onDone, null);
+            return;
+        }
+        try {
+            if (binding.driveId == null || binding.itemId == null) {
+                setStatus(state, SyncStatus.ERROR,
+                        "Not connected to an existing SharePoint file");
+                notifyRestored(onDone, null);
+                return;
+            }
+            setStatus(state, SyncStatus.SYNCING, "Downloading version " + version.id + "…");
+            byte[] bytes = graph().downloadVersion(binding.driveId, binding.itemId, version.id);
+            if (!reloadWithBytes(state, bytes)) {
+                notifyRestored(onDone, null);
+                return;
+            }
+            // CRITICAL: binding.lastETag stays as-is (remote current version untouched);
+            // restore never auto-uploads — publishing is an explicit "Sync now".
+            state.dirty = false;
+            setStatus(state, SyncStatus.UP_TO_DATE,
+                    "Restored version " + version.id + " locally (not yet uploaded)");
+            notifyRestored(onDone, binding.model);
+        } catch (Throwable t) {
+            handleError(state, t);
+            notifyRestored(onDone, null);
+        } finally {
+            state.syncLock.set(false);
+        }
+    }
+
     // ------------------------------------------------------------------ user interaction
 
     private Resolution askResolver(SyncContext context) {
@@ -1018,6 +1181,51 @@ public final class SyncEngine {
             log("isModelDirty failed", e);
         }
         return dirty[0];
+    }
+
+    private static void notifyVersions(Consumer<List<DriveItemVersion>> ok,
+            List<DriveItemVersion> versions) {
+        if (ok != null) {
+            runOnUi(() -> ok.accept(versions));
+        }
+    }
+
+    private static void notifyVersionError(Consumer<Throwable> err, Throwable t) {
+        if (err != null) {
+            runOnUi(() -> err.accept(t));
+        }
+    }
+
+    private static void notifyRestored(Consumer<IArchimateModel> onDone,
+            IArchimateModel reopenedModel) {
+        if (onDone != null) {
+            runOnUi(() -> onDone.accept(reopenedModel));
+        }
+    }
+
+    /**
+     * Runs a callback on the UI thread (immediately when already on it, otherwise
+     * via {@link Display#asyncExec(Runnable)}). Used for the version-history /
+     * restore callbacks; callback failures are logged, never propagated.
+     */
+    private static void runOnUi(Runnable runnable) {
+        try {
+            Display display = Display.getDefault();
+            if (display == null || display.isDisposed()
+                    || display.getThread() == Thread.currentThread()) {
+                runnable.run();
+                return;
+            }
+            display.asyncExec(() -> {
+                try {
+                    runnable.run();
+                } catch (Throwable t) {
+                    log("UI callback failed", t);
+                }
+            });
+        } catch (Throwable t) {
+            log("UI callback failed", t);
+        }
     }
 
     private static void runOnUiAndWait(UiCall call) throws Exception {
